@@ -61,7 +61,6 @@ struct mpc_parser_t;
 typedef struct mpc_parser_t mpc_parser_t;
 
 int mpc_parse(const char *filename, const char *string, mpc_parser_t *p, mpc_result_t *r);
-int mpc_nparse(const char *filename, const char *string, size_t length, mpc_parser_t *p, mpc_result_t *r);
 int mpc_parse_file(const char *filename, FILE *file, mpc_parser_t *p, mpc_result_t *r);
 int mpc_parse_pipe(const char *filename, FILE *pipe, mpc_parser_t *p, mpc_result_t *r);
 int mpc_parse_contents(const char *filename, mpc_parser_t *p, mpc_result_t *r);
@@ -270,7 +269,6 @@ mpc_ast_t *mpc_ast_build(int n, const char *tag, ...);
 mpc_ast_t *mpc_ast_add_root(mpc_ast_t *a);
 mpc_ast_t *mpc_ast_add_child(mpc_ast_t *r, mpc_ast_t *a);
 mpc_ast_t *mpc_ast_add_tag(mpc_ast_t *a, const char *t);
-mpc_ast_t *mpc_ast_add_root_tag(mpc_ast_t *a, const char *t);
 mpc_ast_t *mpc_ast_tag(mpc_ast_t *a, const char *t);
 mpc_ast_t *mpc_ast_state(mpc_ast_t *a, mpc_state_t s);
 
@@ -336,6 +334,8 @@ enum {
 mpc_parser_t *mpca_grammar(int flags, const char *grammar, ...);
 
 mpc_err_t *mpca_lang(int flags, const char *language, ...);
+mpc_err_t *mpca_langv(int flags, const char *language, va_list *va);
+mpc_err_t *mpca_langa(int flags, const char *language, mpc_parser_t **parsers);
 mpc_err_t *mpca_lang_file(int flags, FILE *f, ...);
 mpc_err_t *mpca_lang_pipe(int flags, FILE *f, ...);
 mpc_err_t *mpca_lang_contents(int flags, const char *filename, ...);

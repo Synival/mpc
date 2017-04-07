@@ -80,6 +80,7 @@ typedef struct {
   mpc_state_t state;
   
   char *string;
+  int string_len;
   char *buffer;
   FILE *file;
   
@@ -108,8 +109,9 @@ static mpc_input_t *mpc_input_new_string(const char *filename, const char *strin
   
   i->state = mpc_state_new();
   
-  i->string = malloc(strlen(string) + 1);
-  strcpy(i->string, string);
+  i->string_len = strlen (string);
+  i->string = malloc (sizeof (char) * (i->string_len + 1));
+  memcpy(i->string, string, sizeof (char) * (i->string_len + 1));
   i->buffer = NULL;
   i->file = NULL;
   
@@ -125,37 +127,6 @@ static mpc_input_t *mpc_input_new_string(const char *filename, const char *strin
   memset(i->mem_full, 0, sizeof(char) * MPC_INPUT_MEM_NUM);
   
   return i;
-}
-
-static mpc_input_t *mpc_input_new_nstring(const char *filename, const char *string, size_t length) {
-
-  mpc_input_t *i = malloc(sizeof(mpc_input_t));
-  
-  i->filename = malloc(strlen(filename) + 1);
-  strcpy(i->filename, filename);
-  i->type = MPC_INPUT_STRING;
-  
-  i->state = mpc_state_new();
-  
-  i->string = malloc(length + 1);
-  strncpy(i->string, string, length);
-  i->string[length] = '\0';
-  i->buffer = NULL;
-  i->file = NULL;
-  
-  i->suppress = 0;
-  i->backtrack = 1;
-  i->marks_num = 0;
-  i->marks_slots = MPC_INPUT_MARKS_MIN;
-  i->marks = malloc(sizeof(mpc_state_t) * i->marks_slots);
-  i->lasts = malloc(sizeof(char) * i->marks_slots);
-  i->last = '\0';
-  
-  i->mem_index = 0;
-  memset(i->mem_full, 0, sizeof(char) * MPC_INPUT_MEM_NUM);
-  
-  return i;
-
 }
 
 static mpc_input_t *mpc_input_new_pipe(const char *filename, FILE *pipe) {
@@ -168,6 +139,7 @@ static mpc_input_t *mpc_input_new_pipe(const char *filename, FILE *pipe) {
   i->type = MPC_INPUT_PIPE;
   i->state = mpc_state_new();
   
+  i->string_len = 0;
   i->string = NULL;
   i->buffer = NULL;
   i->file = pipe;
@@ -196,6 +168,7 @@ static mpc_input_t *mpc_input_new_file(const char *filename, FILE *file) {
   i->type = MPC_INPUT_FILE;
   i->state = mpc_state_new();
   
+  i->string_len = 0;
   i->string = NULL;
   i->buffer = NULL;
   i->file = file;
@@ -218,8 +191,13 @@ static void mpc_input_delete(mpc_input_t *i) {
   
   free(i->filename);
   
-  if (i->type == MPC_INPUT_STRING) { free(i->string); }
-  if (i->type == MPC_INPUT_PIPE) { free(i->buffer); }
+  if (i->type == MPC_INPUT_STRING) {
+    i->string_len = 0;
+    free(i->string);
+  }
+  else if (i->type == MPC_INPUT_PIPE) {
+    free(i->buffer);
+  }
   
   free(i->marks);
   free(i->lasts);
@@ -362,10 +340,25 @@ static char mpc_input_buffer_get(mpc_input_t *i) {
 }
 
 static int mpc_input_terminated(mpc_input_t *i) {
-  if (i->type == MPC_INPUT_STRING && i->state.pos == (long)strlen(i->string)) { return 1; }
+  switch (i->type) {
+    case MPC_INPUT_STRING:
+      if (i->state.pos == i->string_len)
+        return 1;
+      return 0;
+    case MPC_INPUT_FILE:
+    case MPC_INPUT_PIPE:
+      if (feof (i->file))
+        return 1;
+      return 0;
+    default:
+      return 0;
+  }
+#if 0
+  if (i->type == MPC_INPUT_STRING && i->state.pos == i->string_len) return 1;
   if (i->type == MPC_INPUT_FILE && feof(i->file)) { return 1; }
   if (i->type == MPC_INPUT_PIPE && feof(i->file)) { return 1; }
   return 0;
+#endif
 }
 
 static char mpc_input_getc(mpc_input_t *i) {
@@ -1254,14 +1247,6 @@ int mpc_parse(const char *filename, const char *string, mpc_parser_t *p, mpc_res
   return x;
 }
 
-int mpc_nparse(const char *filename, const char *string, size_t length, mpc_parser_t *p, mpc_result_t *r) {
-  int x;
-  mpc_input_t *i = mpc_input_new_nstring(filename, string, length);
-  x = mpc_parse_input(i, p, r);
-  mpc_input_delete(i);
-  return x;
-}
-
 int mpc_parse_file(const char *filename, FILE *file, mpc_parser_t *p, mpc_result_t *r) {
   int x;
   mpc_input_t *i = mpc_input_new_file(filename, file);
@@ -2100,7 +2085,7 @@ static mpc_val_t *mpcf_re_range(mpc_val_t *x) {
   size_t start, end;
   const char *tmp = NULL;
   const char *s = x;
-  int comp = s[0] == '^' ? 1 : 0;
+  int comp = s[0] == '^' ? 1 : 0, len = 0;
   char *range = calloc(1,1);
   
   if (s[0] == '\0') { free(x); return mpc_fail("Invalid Regex Range Expression"); } 
@@ -2113,37 +2098,41 @@ static mpc_val_t *mpcf_re_range(mpc_val_t *x) {
     if (s[i] == '\\') {
       tmp = mpc_re_range_escape_char(s[i+1]);
       if (tmp != NULL) {
-        range = realloc(range, strlen(range) + strlen(tmp) + 1);
+        len += strlen(tmp);
+        range = realloc(range, len + 1);
         strcat(range, tmp);
       } else {
-        range = realloc(range, strlen(range) + 1 + 1);
-        range[strlen(range) + 1] = '\0';
-        range[strlen(range) + 0] = s[i+1];      
+        len++;
+        range = realloc(range, len + 1);
+        range[len - 1] = s[i+1];      
+        range[len - 0] = '\0';
       }
       i++;
     }
-    
     /* Regex Range...Range */
     else if (s[i] == '-') {
       if (s[i+1] == '\0' || i == 0) {
-          range = realloc(range, strlen(range) + strlen("-") + 1);
-          strcat(range, "-");
+        len++;
+        range = realloc(range, len + 1);
+        range[len - 1] = '-';
+        range[len - 0] = '\0';
       } else {
+        int pos = len;
         start = s[i-1]+1;
         end = s[i+1]-1;
-        for (j = start; j <= end; j++) {
-          range = realloc(range, strlen(range) + 1 + 1 + 1);
-          range[strlen(range) + 1] = '\0';
-          range[strlen(range) + 0] = (char)j;
-        }        
+        len += (end - start + 1);
+        range = realloc(range, len + 1);
+        for (j = start; j <= end; j++)
+          range[pos++] = j;
+        range[pos] = '\0';
       }
     }
-    
     /* Regex Range Normal */
     else {
-      range = realloc(range, strlen(range) + 1 + 1);
-      range[strlen(range) + 1] = '\0';
-      range[strlen(range) + 0] = s[i];
+      len++;
+      range = realloc(range, len + 1);
+      range[len - 1] = s[i];
+      range[len - 0] = '\0';
     }
   
   }
@@ -2256,7 +2245,7 @@ mpc_val_t *mpcf_oct(mpc_val_t *x) {
 
 mpc_val_t *mpcf_float(mpc_val_t *x) {
   float *y = malloc(sizeof(float));
-  *y = strtof(x, NULL);
+  *y = strtod(x, NULL);
   free(x);
   return y;
 }
@@ -2337,9 +2326,8 @@ static mpc_val_t *mpcf_escape_new(mpc_val_t *x, const char *input, const char **
 
 static mpc_val_t *mpcf_unescape_new(mpc_val_t *x, const char *input, const char **output) {
   
-  int i;
+  int i, len = 0;
   int found = 0;
-  char buff[2];
   char *s = x;
   char *y = calloc(1, 1);
   
@@ -2351,9 +2339,10 @@ static mpc_val_t *mpcf_unescape_new(mpc_val_t *x, const char *input, const char 
     while (output[i]) {
       if ((*(s+0)) == output[i][0] &&
           (*(s+1)) == output[i][1]) {
-        y = realloc(y, strlen(y) + 1 + 1);
-        buff[0] = input[i]; buff[1] = '\0';
-        strcat(y, buff);
+        len++;
+        y = realloc(y, len + 1);
+        y[len - 1] = input[i];
+        y[len - 0] = '\0';
         found = 1;
         s++;
         break;
@@ -2362,9 +2351,10 @@ static mpc_val_t *mpcf_unescape_new(mpc_val_t *x, const char *input, const char 
     }
     
     if (!found) {
-      y = realloc(y, strlen(y) + 1 + 1);
-      buff[0] = *s; buff[1] = '\0';
-      strcat(y, buff);
+      len++;
+      y = realloc(y, len + 1);
+      y[len - 1] = *s;
+      y[len - 0] = '\0';
     }
     
     if (*s == '\0') { break; }
@@ -2677,7 +2667,8 @@ void mpc_ast_delete(mpc_ast_t *a) {
   
   free(a->children);
   free(a->tag);
-  free(a->contents);
+  if (a->contents)
+    free(a->contents);
   free(a);
   
 }
@@ -2685,20 +2676,29 @@ void mpc_ast_delete(mpc_ast_t *a) {
 static void mpc_ast_delete_no_children(mpc_ast_t *a) {
   free(a->children);
   free(a->tag);
-  free(a->contents);
+  if (a->contents)
+     free(a->contents);
   free(a);
 }
 
 mpc_ast_t *mpc_ast_new(const char *tag, const char *contents) {
   
   mpc_ast_t *a = malloc(sizeof(mpc_ast_t));
+
+  if (tag) {
+    a->tag = malloc(strlen(tag) + 1);
+    strcpy(a->tag, tag);
+  }
+  else
+    a->tag = NULL;
   
-  a->tag = malloc(strlen(tag) + 1);
-  strcpy(a->tag, tag);
-  
-  a->contents = malloc(strlen(contents) + 1);
-  strcpy(a->contents, contents);
-  
+  if (contents) {
+    a->contents = malloc(strlen(contents) + 1);
+    strcpy(a->contents, contents);
+  }
+  else
+    a->contents = NULL;
+
   a->state = mpc_state_new();
   
   a->children_num = 0;
@@ -2709,7 +2709,7 @@ mpc_ast_t *mpc_ast_new(const char *tag, const char *contents) {
 
 mpc_ast_t *mpc_ast_build(int n, const char *tag, ...) {
   
-  mpc_ast_t *a = mpc_ast_new(tag, "");
+  mpc_ast_t *a = mpc_ast_new(tag, NULL);
   
   int i;
   va_list va;
@@ -2731,9 +2731,9 @@ mpc_ast_t *mpc_ast_add_root(mpc_ast_t *a) {
 
   if (a == NULL) { return a; }
   if (a->children_num == 0) { return a; }
-  if (a->children_num == 1) { return a; }
+  /* if (a->children_num == 1) { return a; } */
 
-  r = mpc_ast_new(">", "");
+  r = mpc_ast_new(">", NULL);
   mpc_ast_add_child(r, a);
   return r;
 }
@@ -2743,7 +2743,9 @@ int mpc_ast_eq(mpc_ast_t *a, mpc_ast_t *b) {
   int i;
 
   if (strcmp(a->tag, b->tag) != 0) { return 0; }
-  if (strcmp(a->contents, b->contents) != 0) { return 0; }
+  if (a->contents && b->contents) {
+     if (strcmp(a->contents, b->contents) != 0) { return 0; }
+  } else if (a->contents || b->contents) { return 0; }
   if (a->children_num != b->children_num) { return 0; }
   
   for (i = 0; i < a->children_num; i++) {
@@ -2766,14 +2768,6 @@ mpc_ast_t *mpc_ast_add_tag(mpc_ast_t *a, const char *t) {
   memmove(a->tag + strlen(t) + 1, a->tag, strlen(a->tag)+1);
   memmove(a->tag, t, strlen(t));
   memmove(a->tag + strlen(t), "|", 1);
-  return a;
-}
-
-mpc_ast_t *mpc_ast_add_root_tag(mpc_ast_t *a, const char *t) {
-  if (a == NULL) { return a; }
-  a->tag = realloc(a->tag, (strlen(t)-1) + strlen(a->tag) + 1);
-  memmove(a->tag + (strlen(t)-1), a->tag, strlen(a->tag)+1);
-  memmove(a->tag, t, (strlen(t)-1));
   return a;
 }
 
@@ -2800,7 +2794,7 @@ static void mpc_ast_print_depth(mpc_ast_t *a, int d, FILE *fp) {
   
   for (i = 0; i < d; i++) { fprintf(fp, "  "); }
   
-  if (strlen(a->contents)) {
+  if (a->contents) {
     fprintf(fp, "%s:%lu:%lu '%s'\n", a->tag, 
       (long unsigned int)(a->state.row+1),
       (long unsigned int)(a->state.col+1),
@@ -3002,22 +2996,22 @@ mpc_val_t *mpcf_fold_ast(int n, mpc_val_t **xs) {
   if (n == 2 && xs[1] == NULL) { return xs[0]; }
   if (n == 2 && xs[0] == NULL) { return xs[1]; }
   
-  r = mpc_ast_new(">", "");
+  r = mpc_ast_new(">", NULL);
   
   for (i = 0; i < n; i++) {
     
     if (as[i] == NULL) { continue; }
     
-    if        (as[i] && as[i]->children_num == 0) {
-      mpc_ast_add_child(r, as[i]);
-    } else if (as[i] && as[i]->children_num == 1) {
-      mpc_ast_add_child(r, mpc_ast_add_root_tag(as[i]->children[0], as[i]->tag));
-      mpc_ast_delete_no_children(as[i]);
-    } else if (as[i] && as[i]->children_num >= 2) {
+    if (as[i] && as[i]->children_num > 0) {
+      
       for (j = 0; j < as[i]->children_num; j++) {
         mpc_ast_add_child(r, as[i]->children[j]);
       }
+      
       mpc_ast_delete_no_children(as[i]);
+      
+    } else if (as[i] && as[i]->children_num == 0) {
+      mpc_ast_add_child(r, as[i]);
     }
   
   }
@@ -3220,7 +3214,7 @@ static mpc_val_t *mpcaf_grammar_regex(mpc_val_t *x, void *s) {
 /* Should this just use `isdigit` instead? */
 static int is_number(const char* s) {
   size_t i;
-  for (i = 0; i < strlen(s); i++) { if (!strchr("0123456789", s[i])) { return 0; } }
+  for (i = 0; i < strlen(s); i++) { if (s[i] < 0 || s[i] > 9) { return 0; } }
   return 1;
 }
 
@@ -3228,26 +3222,28 @@ static mpc_parser_t *mpca_grammar_find_parser(char *x, mpca_grammar_st_t *st) {
   
   int i;
   mpc_parser_t *p;
-  
-  /* Case of Number */
-  if (is_number(x)) {
 
-    i = strtol(x, NULL, 10);
-    
-    while (st->parsers_num <= i) {
+  /* Load variadic arguments. */
+  if (st->va) {
+    while (1) {
+      if ((p = va_arg (*(st->va), mpc_parser_t*)) == NULL)
+        break;
       st->parsers_num++;
       st->parsers = realloc(st->parsers, sizeof(mpc_parser_t*) * st->parsers_num);
-      st->parsers[st->parsers_num-1] = va_arg(*st->va, mpc_parser_t*);
-      if (st->parsers[st->parsers_num-1] == NULL) {
-        return mpc_failf("No Parser in position %i! Only supplied %i Parsers!", i, st->parsers_num);
-      }
+      st->parsers[st->parsers_num-1] = p;
     }
-    
-    return st->parsers[st->parsers_num-1];
+    st->va = NULL;
+  }
+
+  /* Case of Number */
+  if (is_number(x)) {
+    i = strtol(x, NULL, 10);
+    if (i - 1 >= st->parsers_num)
+      return mpc_failf("No Parser in position %i! Only supplied %i Parsers!", i, st->parsers_num);
+    return st->parsers[i - 1];
   
   /* Case of Identifier */
   } else {
-    
     /* Search Existing Parsers */
     for (i = 0; i < st->parsers_num; i++) {
       mpc_parser_t *q = st->parsers[i];
@@ -3255,20 +3251,7 @@ static mpc_parser_t *mpca_grammar_find_parser(char *x, mpca_grammar_st_t *st) {
       if (q->name && strcmp(q->name, x) == 0) { return q; }
     }
     
-    /* Search New Parsers */
-    while (1) {
-    
-      p = va_arg(*st->va, mpc_parser_t*);
-      
-      st->parsers_num++;
-      st->parsers = realloc(st->parsers, sizeof(mpc_parser_t*) * st->parsers_num);
-      st->parsers[st->parsers_num-1] = p;
-      
-      if (p == NULL) { return mpc_failf("Unknown Parser '%s'!", x); }
-      if (p->name && strcmp(p->name, x) == 0) { return p; }
-      
-    }
-  
+    return mpc_failf("Unknown Parser '%s'!", x);
   }  
   
 }
@@ -3557,14 +3540,23 @@ mpc_err_t *mpca_lang_pipe(int flags, FILE *p, ...) {
 
 mpc_err_t *mpca_lang(int flags, const char *language, ...) {
   
-  mpca_grammar_st_t st;
-  mpc_input_t *i;
   mpc_err_t *err;
   
   va_list va;  
   va_start(va, language);
+  err = mpca_langv (flags, language, &va);
+  va_end (va);
+
+  return err;
+}
   
-  st.va = &va;
+mpc_err_t *mpca_langv(int flags, const char *language, va_list *va) {
+
+  mpca_grammar_st_t st;
+  mpc_input_t *i;
+  mpc_err_t *err;
+
+  st.va = va;
   st.parsers_num = 0;
   st.parsers = NULL;
   st.flags = flags;
@@ -3574,7 +3566,29 @@ mpc_err_t *mpca_lang(int flags, const char *language, ...) {
   mpc_input_delete(i);
   
   free(st.parsers);
-  va_end(va);
+  return err;
+}
+
+mpc_err_t *mpca_langa(int flags, const char *language, mpc_parser_t **parsers) {
+  mpca_grammar_st_t st;
+  mpc_input_t *i;
+  mpc_err_t *err;
+  int size;
+
+  /* Determine the size of our parser array. */
+  for (size = 0; parsers[size] != NULL; size++);
+
+  st.va = NULL;
+  st.parsers_num = size;
+  st.parsers = malloc (sizeof (mpc_parser_t *) * size);
+  memcpy (st.parsers, parsers, sizeof (mpc_parser_t *) * size);
+  st.flags = flags;
+  
+  i = mpc_input_new_string("<mpca_lang>", language);
+  err = mpca_lang_st(i, &st);
+  mpc_input_delete(i);
+  
+  free(st.parsers);
   return err;
 }
 
